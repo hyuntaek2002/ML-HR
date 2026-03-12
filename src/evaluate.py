@@ -1,65 +1,114 @@
+import os
+import re
 import time
-import mlflow
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-from rouge_score import rouge_scorer
-from preprocess import clean_text 
+import torch
+import torch.nn.functional as F
+from dotenv import load_dotenv
+from supabase import create_client
+from transformers import (
+    AutoTokenizer, 
+    AutoModelForSeq2SeqLM, 
+    AutoModelForCausalLM, 
+    AutoModel,
+    BitsAndBytesConfig
+)
+from preprocess import clean_text
 
-# 1. MLflow 세팅
-mlflow.set_tracking_uri("http://127.0.0.1:5000")
-mlflow.set_experiment("News_Summary_Evaluation")
+load_dotenv()
+supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
-# 2. 한국어 요약의 대명사 (가장 안정적인 모델)
-print("🤖 가장 대중적인 KoBART 모델을 가져오는 중입니다...")
-model_name = "digit82/kobart-summarization"
+models = {
+    "KoBART": "digit82/kobart-summarization",
+    "KoT5": "lcw99/t5-base-korean-text-summary",
+    "KLUE-RoBERTa": "klue/roberta-base",
+    "Mistral-7B": "davidkim205/komt-mistral-7b-v1"
+}
 
-try:
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-except Exception as e:
-    print(f"❌ 모델 로드 중 에러 발생: {e}")
-    print("💡 네트워크 문제일 수 있습니다. 잠시 후 다시 시도하거나 인터넷 연결을 확인해 주세요.")
-    exit()
+def run_evaluation():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # 처리할 뉴스 개수를 8개로 제한
+    response = supabase.table("news_data").select("*").is_("summary_kobart", "null").limit(8).execute()
+    
+    if not response.data:
+        print("새로 요약할 뉴스가 없습니다.")
+        return
 
-# 3. 데이터 준비(test)
-raw_news = """
-인공지능(AI) 기술이 빠르게 발전하면서 산업 전반에 걸쳐 혁신이 일어나고 있다. 특히 생성형 AI는 텍스트, 이미지, 영상 등 다양한 형태의 콘텐츠를 인간과 유사한 수준으로 만들어내며 큰 주목을 받고 있다. 전문가들은 이러한 AI 기술이 업무 효율성을 극대화하고 새로운 비즈니스 모델을 창출할 것으로 기대하고 있다. 하지만 일각에서는 AI가 인간의 일자리를 대체할 수 있다는 우려의 목소리도 나오고 있으며, 저작권 침해나 가짜 뉴스 생성과 같은 윤리적 문제에 대한 해결책 마련이 시급하다는 지적도 제기된다. 이에 따라 정부와 기업들은 AI 기술 발전과 함께 이를 규제하고 관리할 수 있는 법적, 제도적 가이드라인을 준비하는 데 집중하고 있다.
-"""
-reference_summary = "생성형 AI 기술의 발전으로 산업 혁신과 업무 효율성 증대가 기대되지만, 일자리 감소와 윤리적 문제에 대한 우려로 인해 법적, 제도적 가이드라인 마련이 시급한 상황이다."
+    print(f"총 {len(response.data)}건의 뉴스 요약을 시작합니다. (장치: {device})")
 
-clean_news = clean_text(raw_news)
+    for news in response.data:
+        print(f"\n기사: {news['title'][:30]}...")
 
-# 4. 모델 평가 실행
-with mlflow.start_run(run_name="KoBART_Digit82_Test"):
-    mlflow.log_param("model_name", model_name)
-    
-    start_time = time.time()
-    
-    # 입력 인코딩
-    inputs = tokenizer(clean_news, return_tensors="pt", truncation=True, max_length=512)
-    
-    # 요약 생성
-    summary_ids = model.generate(
-        inputs["input_ids"],
-        num_beams=4,
-        max_length=100,
-        min_length=20,
-        no_repeat_ngram_size=3,
-        early_stopping=True
-    )
-    
-    ai_summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-    
-    latency = time.time() - start_time
-    
-    # ROUGE 점수 채점
-    scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
-    scores = scorer.score(reference_summary, ai_summary)
-    rouge_l_score = scores['rougeL'].fmeasure * 100
-    
-    mlflow.log_metric("Latency", latency)
-    mlflow.log_metric("ROUGE_L", rouge_l_score)
-    
-    print("\n" + "="*60)
-    print(f"🤖 [AI 요약 결과]: {ai_summary}")
-    print("="*60)
-    print(f"📊 [성적표] 시간: {latency:.2f}초 / ROUGE: {rouge_l_score:.1f}점")
+        description = news.get('description')
+        if not description or len(str(description).strip()) < 20:
+            print("(본문이 너무 짧거나 비어있어 요약을 건너뜁니다.")
+            supabase.table("news_data").update({
+                "summary_kobart": "본문 부족",
+                "summary_kot5": "본문 부족",
+                "summary_roberta": "본문 부족",
+                "summary_mistral": "본문 부족"
+            }).eq("id", news["id"]).execute()
+            continue
+
+        raw_text = clean_text(str(description))
+        update_data = {}
+
+        for m_type, m_name in models.items():
+            try:
+                if m_type == "KoBART":
+                    tok = AutoTokenizer.from_pretrained(m_name, use_fast=False)
+                    mod = AutoModelForSeq2SeqLM.from_pretrained(m_name).to(device)
+                    inputs = tok(raw_text, return_tensors="pt", truncation=True, max_length=512).to(device)
+                    out = mod.generate(inputs["input_ids"], num_beams=4, max_length=128)
+                    update_data["summary_kobart"] = tok.decode(out[0], skip_special_tokens=True)
+
+                elif m_type == "KoT5":
+                    tok = AutoTokenizer.from_pretrained(m_name, use_fast=False)
+                    mod = AutoModelForSeq2SeqLM.from_pretrained(m_name).to(device)
+                    inputs = tok("summarize: " + raw_text, return_tensors="pt", truncation=True, max_length=512).to(device)
+                    out = mod.generate(inputs["input_ids"], max_length=128)
+                    update_data["summary_kot5"] = tok.decode(out[0], skip_special_tokens=True)
+
+                elif m_type == "KLUE-RoBERTa":
+                    tok = AutoTokenizer.from_pretrained(m_name)
+                    mod = AutoModel.from_pretrained(m_name).to(device)
+                    sents = [s.strip() for s in re.split(r'(?<=[.!?])\s+', raw_text) if len(s.strip()) > 5]
+                    
+                    if len(sents) < 2:
+                        update_data["summary_roberta"] = raw_text[:100]
+                    else:
+                        doc_inputs = tok(raw_text, return_tensors="pt", truncation=True).to(device)
+                        with torch.no_grad(): doc_emb = mod(**doc_inputs).last_hidden_state[:, 0, :]
+                        sent_inputs = tok(sents, padding=True, truncation=True, return_tensors="pt").to(device)
+                        with torch.no_grad(): sent_embs = mod(**sent_inputs).last_hidden_state[:, 0, :]
+                        sims = F.cosine_similarity(sent_embs, doc_emb)
+                        update_data["summary_roberta"] = sents[sims.argmax().item()]
+
+                elif m_type == "Mistral-7B":
+                    q_conf = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
+                    tok = AutoTokenizer.from_pretrained(m_name)
+                    mod = AutoModelForCausalLM.from_pretrained(m_name, quantization_config=q_conf, device_map="auto")
+                    prompt = f"### 본문:\n{raw_text}\n\n### 한줄 요약:"
+                    inputs = tok(prompt, return_tensors="pt").to(device)
+                    out = mod.generate(**inputs, max_new_tokens=100)
+                    update_data["summary_mistral"] = tok.decode(out[0], skip_special_tokens=True).split("### 한줄 요약:")[-1].strip()
+
+                del mod, tok
+                if device == "cuda": torch.cuda.empty_cache()
+
+            except Exception as e:
+                # 에러 발생 시 데이터베이스 컬럼명과 정확히 일치하도록 예외 처리 수정
+                if m_type == "KoBART":
+                    update_data["summary_kobart"] = f"Error"
+                elif m_type == "KoT5":
+                    update_data["summary_kot5"] = f"Error"
+                elif m_type == "KLUE-RoBERTa":
+                    update_data["summary_roberta"] = f"Error"
+                elif m_type == "Mistral-7B":
+                    update_data["summary_mistral"] = f"Error"
+
+        supabase.table("news_data").update(update_data).eq("id", news["id"]).execute()
+        print("4대 모델 요약 완료 및 DB 저장")
+
+if __name__ == "__main__":
+    run_evaluation()
