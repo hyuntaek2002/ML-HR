@@ -1,0 +1,15 @@
+# 보안 파일 (API 키 절대 유출 방지)
+.env
+
+# 대용량 데이터 및 모델 가중치 (DVC로 따로 관리)
+data/
+models/
+
+# 파이썬 찌꺼기 및 가상환경
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# MLflow 로컬 기록
+mlruns/
