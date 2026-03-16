@@ -28,31 +28,7 @@
 
 - `.env` 파일에 네이버 API와 Supabase 키 설정
 - 필수 라이브러리 설치: `pip install -r requirements.txt`
-- 공식 실행 진입점: `python src/main.py`
-- 배치 실행: `.\run_all.bat`
-
-## 현재 기준 파이프라인
-
-- 공식 파이프라인: `collect.py -> evaluate.py`
-- `collect.py`: 네이버 뉴스 수집 및 Supabase 저장
-- `evaluate.py`: 4개 모델 요약 생성 및 모델별 컬럼 저장
-- `main.py`: 공식 실행 엔트리포인트
-- `auto_pipeline.py`: 단일 KoBART 데모 스크립트로, 메인 파이프라인에는 포함하지 않음
-
-## `news_data` 기준 스키마
-
-- `id`: 뉴스 레코드 기본 키
-- `title`: 기사 제목
-- `description`: 기사 본문 또는 대체 본문
-- `originallink`: 원문 링크
-- `topic`: 뉴스 카테고리
-- `summary_kobart`: KoBART 요약 결과
-- `summary_kot5`: KoT5 요약 결과
-- `summary_roberta`: KLUE-RoBERTa 추출 결과
-- `summary_mistral`: Mistral-7B 요약 결과
-
-현재 기준에서는 모델별 결과 저장을 표준으로 사용합니다.
-기존 `summary` 컬럼은 `auto_pipeline.py` 전용 레거시 컬럼이며, 메인 파이프라인에서는 사용하지 않습니다.
+- 파이프라인 실행: `.\run_all.bat`
 
 # 현재 프로젝트 진행 상황 점검
 
