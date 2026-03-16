@@ -1,0 +1,44 @@
+graph TD
+    subgraph DataOps [1. 데이터 수집 및 저장]
+        A[네이버 뉴스 API / AI-Hub] -->|정기 수집| B[GitHub Actions]
+        B -->|원천 데이터 수집| C[ETL / Preprocessing]
+        C -->|운영 데이터 저장| D[(Supabase DB)]
+        C -->|학습 데이터셋 버전 관리| E[(DVC + S3)]
+    end
+
+    subgraph ModelOps [2. 모델 실험 및 평가]
+        D -->|실시간/운영 데이터 제공| F[Experiment Pipeline]
+        E -->|학습 데이터셋 로드| F
+        F -->|실험 실행| G{SageMaker Studio Lab}
+
+        G -->|생성형 요약 평가| M1[KoBART]
+        G -->|생성형 요약 평가| M2[KoT5]
+        G -->|기준 성능 비교| M3[GPT-3.5 API]
+        G -->|추출형 기준 모델| M4[KLUE-RoBERTa]
+        G -->|오픈소스 LLM 비교| M5[Mistral-7B]
+
+        M1 --> H[MLflow Tracking Server]
+        M2 --> H
+        M3 --> H
+        M4 --> H
+        M5 --> H
+
+        H -->|평가 지표 집계| I[Model Evaluation]
+        I -->|ROUGE / Latency / Cost / Stability| J((Model Registry))
+        J -->|모델 아티팩트 저장| E
+    end
+
+    subgraph DevOps [3. 배포]
+        J -->|Champion Model 선택| K[Deployment Approval]
+        K -->|선정 모델 배포| L[FastAPI + Docker]
+        L -->|자동 배포| M[Render.com]
+        M -->|요약 서비스 제공| N[사용자 웹사이트]
+    end
+
+    subgraph Monitoring [4. 모니터링 및 재학습]
+        M -->|서비스 품질 모니터링| O[Evidently AI]
+        M -->|시스템 지표 수집| P[Prometheus]
+        P -->|대시보드 시각화| Q[Grafana]
+        O -.->|데이터 드리프트 / 품질 저하 감지| F
+        Q -.->|장애 및 성능 이슈 확인| F
+    end
