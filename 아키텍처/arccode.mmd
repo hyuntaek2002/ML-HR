@@ -13,15 +13,11 @@ graph TD
 
         G -->|생성형 요약 평가| M1[KoBART]
         G -->|생성형 요약 평가| M2[KoT5]
-        G -->|기준 성능 비교| M3[GPT-3.5 API]
         G -->|추출형 기준 모델| M4[KLUE-RoBERTa]
-        G -->|오픈소스 LLM 비교| M5[Mistral-7B]
 
         M1 --> H[MLflow Tracking Server]
         M2 --> H
-        M3 --> H
         M4 --> H
-        M5 --> H
 
         H -->|평가 지표 집계| I[Model Evaluation]
         I -->|ROUGE / Latency / Cost / Stability| J((Model Registry))

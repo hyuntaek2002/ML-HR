@@ -1,6 +1,5 @@
 import os
 import re
-import time
 import torch
 import torch.nn.functional as F
 from dotenv import load_dotenv
@@ -8,9 +7,7 @@ from supabase import create_client
 from transformers import (
     AutoTokenizer, 
     AutoModelForSeq2SeqLM, 
-    AutoModelForCausalLM, 
-    AutoModel,
-    BitsAndBytesConfig
+    AutoModel
 )
 from preprocess import clean_text
 
@@ -20,8 +17,7 @@ supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 models = {
     "KoBART": "digit82/kobart-summarization",
     "KoT5": "lcw99/t5-base-korean-text-summary",
-    "KLUE-RoBERTa": "klue/roberta-base",
-    "Mistral-7B": "davidkim205/komt-mistral-7b-v1"
+    "KLUE-RoBERTa": "klue/roberta-base"
 }
 
 def run_evaluation():
@@ -45,8 +41,7 @@ def run_evaluation():
             supabase.table("news_data").update({
                 "summary_kobart": "본문 부족",
                 "summary_kot5": "본문 부족",
-                "summary_roberta": "본문 부족",
-                "summary_mistral": "본문 부족"
+                "summary_roberta": "본문 부족"
             }).eq("id", news["id"]).execute()
             continue
 
@@ -84,15 +79,6 @@ def run_evaluation():
                         sims = F.cosine_similarity(sent_embs, doc_emb)
                         update_data["summary_roberta"] = sents[sims.argmax().item()]
 
-                elif m_type == "Mistral-7B":
-                    q_conf = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
-                    tok = AutoTokenizer.from_pretrained(m_name)
-                    mod = AutoModelForCausalLM.from_pretrained(m_name, quantization_config=q_conf, device_map="auto")
-                    prompt = f"### 본문:\n{raw_text}\n\n### 한줄 요약:"
-                    inputs = tok(prompt, return_tensors="pt").to(device)
-                    out = mod.generate(**inputs, max_new_tokens=100)
-                    update_data["summary_mistral"] = tok.decode(out[0], skip_special_tokens=True).split("### 한줄 요약:")[-1].strip()
-
                 del mod, tok
                 if device == "cuda": torch.cuda.empty_cache()
 
@@ -104,11 +90,9 @@ def run_evaluation():
                     update_data["summary_kot5"] = f"Error"
                 elif m_type == "KLUE-RoBERTa":
                     update_data["summary_roberta"] = f"Error"
-                elif m_type == "Mistral-7B":
-                    update_data["summary_mistral"] = f"Error"
 
         supabase.table("news_data").update(update_data).eq("id", news["id"]).execute()
-        print("4대 모델 요약 완료 및 DB 저장")
+        print("3개 모델 요약 완료 및 DB 저장")
 
 if __name__ == "__main__":
     run_evaluation()
