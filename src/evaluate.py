@@ -1,98 +1,119 @@
 import os
 import re
-import torch
-import torch.nn.functional as F
+import json
+import openai
+import requests
+import time
 from dotenv import load_dotenv
 from supabase import create_client
-from transformers import (
-    AutoTokenizer, 
-    AutoModelForSeq2SeqLM, 
-    AutoModel
-)
-from preprocess import clean_text
 
+# 환경 설정 및 API 클라이언트 초기화
 load_dotenv()
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-models = {
-    "KoBART": "digit82/kobart-summarization",
-    "KoT5": "lcw99/t5-base-korean-text-summary",
-    "KLUE-RoBERTa": "klue/roberta-base"
-}
+def get_gpt_score(summary_text, original_text):
+    """GPT-4o-mini를 이용한 요약 품질 평가"""
+    prompt = f"원문: {original_text}\n요약: {summary_text}\n품질을 0~100점 사이 JSON으로 평가해: {{\"score\": 0}}"
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={ "type": "json_object" }
+        )
+        result = json.loads(response.choices[0].message.content)
+        return float(result.get("score", 0))
+    except Exception as e:
+        print(f"\n    ❌ GPT 평가 실패: {e}")
+        return None
 
-def run_evaluation():
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+def get_clova_score(summary_text, original_text):
+    """HyperCLOVA X HCX-005 V3를 이용한 요약 품질 평가"""
+    url = "https://clovastudio.stream.ntruss.com/v3/chat-completions/HCX-005"
+    headers = {
+        "Authorization": f"Bearer {os.getenv('CLOVA_API_KEY')}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
     
-    # 처리할 뉴스 개수를 8개로 제한
-    response = supabase.table("news_data").select("*").is_("summary_kobart", "null").limit(8).execute()
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": f"뉴스 원문과 요약문을 비교하여 요약 품질을 0~100 사이의 숫자로만 평가해줘.\n\n원문: {original_text}\n요약: {summary_text}"
+            }
+        ],
+        "topP": 0.8,
+        "topK": 0,
+        "maxTokens": 256,
+        "temperature": 0.1,
+        "stopBefore": [],
+        "repeatPenalty": 1.1
+    }
     
-    if not response.data:
-        print("새로 요약할 뉴스가 없습니다.")
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        if response.status_code == 200:
+            res_json = response.json()
+            content = res_json['result']['message']['content']
+            score_match = re.search(r'\d+(\.\d+)?', content)
+            if score_match:
+                return float(score_match.group())
+        return None
+    except Exception as e:
+        print(f"\n    ❌ Clova 호출 예외: {e}")
+        return None
+
+def evaluate_models():
+    """DB에서 요약은 완료되었으나 평가(score)가 없는 모든 뉴스를 채점합니다."""
+    print("\n" + "="*50)
+    print("⚖️ [AI 심사위원 평가 사이클 시작]")
+    
+    # 1. 평가 전(score_kobart가 NULL)인 모든 데이터 호출 (전 분야 대응)
+    response = supabase.table("news_data").select("*").is_("score_kobart", "null").execute()
+    news_list = response.data
+    
+    if not news_list:
+        print("💡 현재 평가할 새로운 뉴스가 없습니다.")
         return
 
-    print(f"총 {len(response.data)}건의 뉴스 요약을 시작합니다. (장치: {device})")
+    print(f"🧐 총 {len(news_list)}건의 요약문을 심사합니다.")
 
-    for news in response.data:
-        print(f"\n기사: {news['title'][:30]}...")
-
-        description = news.get('description')
-        if not description or len(str(description).strip()) < 20:
-            print("(본문이 너무 짧거나 비어있어 요약을 건너뜁니다.")
-            supabase.table("news_data").update({
-                "summary_kobart": "본문 부족",
-                "summary_kot5": "본문 부족",
-                "summary_roberta": "본문 부족"
-            }).eq("id", news["id"]).execute()
-            continue
-
-        raw_text = clean_text(str(description))
+    for news in news_list:
+        news_id = news['id']
+        news_topic = news.get('topic', '미분류')
+        print(f"\n[평가 진행] ID: {news_id} | 분야: {news_topic} | 제목: {news['title'][:20]}...")
+        
         update_data = {}
+        # 3개 모델 각각에 대해 심사 진행
+        for m in ["kobart", "kot5", "roberta"]:
+            summary = news.get(f"summary_{m}")
+            # 요약문이 없거나 실패 메시지인 경우 건너뜀
+            if not summary or "실패" in summary or len(summary) < 5:
+                update_data[f"score_{m}"] = 0.0
+                continue
+            
+            print(f"   > {m.upper()} 채점 중...", end=" ", flush=True)
+            s1 = get_gpt_score(summary, news['description'])
+            s2 = get_clova_score(summary, news['description'])
+            
+            valid_scores = [s for s in [s1, s2] if s is not None]
+            if valid_scores:
+                final_score = round(sum(valid_scores) / len(valid_scores), 1)
+                update_data[f"score_{m}"] = final_score
+                print(f"✅ {final_score}점")
+            else:
+                update_data[f"score_{m}"] = 0.0
+                print("❌ 평가 실패(0점 처리)")
+            
+            time.sleep(0.5) # API 속도 제한 방지
 
-        for m_type, m_name in models.items():
-            try:
-                if m_type == "KoBART":
-                    tok = AutoTokenizer.from_pretrained(m_name, use_fast=False)
-                    mod = AutoModelForSeq2SeqLM.from_pretrained(m_name).to(device)
-                    inputs = tok(raw_text, return_tensors="pt", truncation=True, max_length=512).to(device)
-                    out = mod.generate(inputs["input_ids"], num_beams=4, max_length=128)
-                    update_data["summary_kobart"] = tok.decode(out[0], skip_special_tokens=True)
+        # 채점 결과 DB 업데이트
+        if update_data:
+            supabase.table("news_data").update(update_data).eq("id", news_id).execute()
+            print(f"   └ ID {news_id} 점수 저장 완료")
 
-                elif m_type == "KoT5":
-                    tok = AutoTokenizer.from_pretrained(m_name, use_fast=False)
-                    mod = AutoModelForSeq2SeqLM.from_pretrained(m_name).to(device)
-                    inputs = tok("summarize: " + raw_text, return_tensors="pt", truncation=True, max_length=512).to(device)
-                    out = mod.generate(inputs["input_ids"], max_length=128)
-                    update_data["summary_kot5"] = tok.decode(out[0], skip_special_tokens=True)
-
-                elif m_type == "KLUE-RoBERTa":
-                    tok = AutoTokenizer.from_pretrained(m_name)
-                    mod = AutoModel.from_pretrained(m_name).to(device)
-                    sents = [s.strip() for s in re.split(r'(?<=[.!?])\s+', raw_text) if len(s.strip()) > 5]
-                    
-                    if len(sents) < 2:
-                        update_data["summary_roberta"] = raw_text[:100]
-                    else:
-                        doc_inputs = tok(raw_text, return_tensors="pt", truncation=True).to(device)
-                        with torch.no_grad(): doc_emb = mod(**doc_inputs).last_hidden_state[:, 0, :]
-                        sent_inputs = tok(sents, padding=True, truncation=True, return_tensors="pt").to(device)
-                        with torch.no_grad(): sent_embs = mod(**sent_inputs).last_hidden_state[:, 0, :]
-                        sims = F.cosine_similarity(sent_embs, doc_emb)
-                        update_data["summary_roberta"] = sents[sims.argmax().item()]
-
-                del mod, tok
-                if device == "cuda": torch.cuda.empty_cache()
-
-            except Exception as e:
-                # 에러 발생 시 데이터베이스 컬럼명과 정확히 일치하도록 예외 처리 수정
-                if m_type == "KoBART":
-                    update_data["summary_kobart"] = f"Error"
-                elif m_type == "KoT5":
-                    update_data["summary_kot5"] = f"Error"
-                elif m_type == "KLUE-RoBERTa":
-                    update_data["summary_roberta"] = f"Error"
-
-        supabase.table("news_data").update(update_data).eq("id", news["id"]).execute()
-        print("3개 모델 요약 완료 및 DB 저장")
+    print("\n🏆 모든 대상에 대한 평가가 최종 완료되었습니다!")
 
 if __name__ == "__main__":
-    run_evaluation()
+    evaluate_models()

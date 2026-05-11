@@ -1,67 +1,107 @@
 import os
 import time
+import torch
+import traceback
+import re
 from dotenv import load_dotenv
 from supabase import create_client
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from preprocess import clean_text
 
-# 1. DB 접속
+# 1. 환경 설정
 load_dotenv()
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
-# 2. AI 요약 세팅
-print("AI 요약 가동 준비 중")
-model_name = "digit82/kobart-summarization"
-tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
-model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+# 비교할 3가지 모델 정의
+MODEL_CONFIGS = {
+    "kobart": "digit82/kobart-summarization",
+    "kot5": "paust/pko-t5-base",
+    "roberta": "EbanLee/kobart-summary-v3"
+}
 
-# 3. 요약 안 된 뉴스 가져오기
-print("DB에서 새 뉴스를 확인")
-response = supabase.table("news_data").select("*").is_("summary", "null").execute()
-news_list = response.data
-
-if not news_list:
-    print("현재 요약할 새로운 뉴스가 없습니다.")
-    exit()
-
-print(f"총 {len(news_list)}건의 요약 작업 대기열을 발견했습니다.\n")
-
-# 4. 스마트 요약 파이프라인
-for news in news_list:
-    news_id = news['id'] 
+def generate_with_model(model_name, text):
+    """지정된 모델을 사용하여 요약문을 생성합니다."""
+    model_id = MODEL_CONFIGS[model_name]
+    print(f"   > [{model_name}] 모델 추론 시작...")
     
-    # 본문(description)을 먼저 찾고, 없으면 제목(title)을 씁니다.
-    raw_text = news.get('description', '') 
-    if not raw_text or len(raw_text) < 10: 
-        raw_text = news.get('title', '') 
+    try:
+        # T5 계열은 'summarize: ' 접두사 사용
+        input_text = f"summarize: {text}" if model_name == "kot5" else text
         
-    if not raw_text:
-        continue 
-
-    print(f"처리 중: [{news['title']}]")
-    clean_news = clean_text(raw_text)
-    
-    # ★ 실무형 안전장치: 텍스트가 너무 짧으면 요약 모델을 돌리지 않고 그대로 사용합니다.
-    if len(clean_news) < 40:
-        print("텍스트가 너무 짧아 원문을 그대로 사용")
-        ai_summary = clean_news
-    else:
-        # 텍스트가 충분히 길 때만 AI 요약 가동
-        inputs = tokenizer(clean_news, return_tensors="pt", truncation=True, max_length=512)
+        # [중요] T5의 vocab 에러 방지를 위해 use_fast=False 유지
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_id, 
+            token=os.getenv("HF_TOKEN"),
+            use_fast=False 
+        )
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_id, token=os.getenv("HF_TOKEN"))
+        
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model.to(device)
+        
+        # 토크나이징 및 생성
+        inputs = tokenizer(input_text, return_tensors="pt", truncation=True, max_length=512).to(device)
         summary_ids = model.generate(
             inputs["input_ids"],
             num_beams=4,
-            max_length=100,
-            min_length=15, # 최소 길이를 15로 줄여서 반복을 방지합니다.
+            max_length=150,
+            min_length=20,
             no_repeat_ngram_size=3,
             early_stopping=True
         )
-        ai_summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-    
-    # [DB 업데이트 (저장)]
-    supabase.table("news_data").update({"summary": ai_summary}).eq("id", news_id).execute()
-    
-    print(f"완료: {ai_summary}\n")
-    time.sleep(1)
+        
+        summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+        
+        # 메모리 효율화를 위한 정리
+        del model
+        del tokenizer
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+        return summary
 
-print("파이프라인 가동이 완벽하게 끝났습니다.")
+    except Exception as e:
+        print(f"   ⚠️ [{model_name}] 에러 발생: {e}")
+        return f"요약 실패 (에러 확인 필요)"
+
+def run_summarization():
+    """DB에서 요약이 필요한 데이터를 찾아 3개 모델로 요약을 진행합니다."""
+    print("🔍 DB에서 요약 대기 데이터(전 분야) 확인 중...")
+    
+    # 요약이 하나라도 비어있는(null) 뉴스 호출
+    response = supabase.table("news_data").select("*").is_("summary_kobart", "null").execute()
+    news_list = response.data
+
+    if not news_list:
+        print("💡 현재 요약할 새로운 뉴스가 없습니다.")
+        return
+
+    print(f"📝 총 {len(news_list)}건의 뉴스 요약을 시작합니다.")
+
+    for news in news_list:
+        news_id = news['id']
+        news_topic = news.get('topic', '미분류') # 어떤 분야인지 파악
+        raw_text = news.get('description') or news.get('title')
+        
+        # HTML 태그 제거 및 텍스트 클리닝
+        clean_news = clean_text(re.sub('<[^>]*>', '', raw_text))
+        
+        print(f"\n[작업 시작] ID: {news_id} | 분야: {news_topic} | 제목: {news['title'][:20]}...")
+        
+        # 3개 모델 순차적 요약
+        sum_kobart = generate_with_model("kobart", clean_news)
+        sum_kot5 = generate_with_model("kot5", clean_news)
+        sum_roberta = generate_with_model("roberta", clean_news)
+
+        # 결과 업데이트
+        supabase.table("news_data").update({
+            "summary_kobart": sum_kobart,
+            "summary_kot5": sum_kot5,
+            "summary_roberta": sum_roberta
+        }).eq("id", news_id).execute()
+        
+        print(f"✅ ID {news_id} ({news_topic}) 저장 완료")
+        time.sleep(0.5) # DB 과부하 방지용 짧은 휴식
+
+if __name__ == "__main__":
+    run_summarization()
