@@ -13,7 +13,7 @@ jobs:
     - name: Checkout Repository Code
       uses: actions/checkout@v4
 
-     Sir, - name: Set up Python
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
@@ -23,7 +23,6 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    # 🚀 보내주신 .env의 모든 보안 키를 안전하게 가상 환경에 주입하여 실행합니다.
     - name: Run MLOps Core Pipeline
       env:
         NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
