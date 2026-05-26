@@ -1,4 +1,5 @@
 import os
+import html  # 🚨 HTML 특수문자 완벽 세탁용 라이브러리 추가
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -14,7 +15,7 @@ TOPICS = ["IT", "경제", "사회", "정치", "연예", "스포츠", "생활/문
 def get_full_text(url):
     """뉴스 URL에서 본문 전체 텍스트를 추출"""
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         response = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -37,33 +38,43 @@ def collect_news(topic, count=1):
         "X-Naver-Client-Secret": os.getenv("NAVER_CLIENT_SECRET")
     }
     
-    url = f"https://openapi.naver.com/v1/search/news.json?query={topic}&display={count}&sort=sim"
-    response = requests.get(url, headers=headers)
+    # 🚨 [안전장치] URL 한글 깨짐 방지를 위해 params 딕셔너리 구조로 변경
+    base_url = "https://openapi.naver.com/v1/search/news.json"
+    params = {
+        "query": topic,
+        "display": count,
+        "sort": "sim"
+    }
     
-    if response.status_code == 200:
-        items = response.json().get('items', [])
-        for item in items:
-            full_text = get_full_text(item['link'])
-            if not full_text or len(full_text) < 50:
-                full_text = item['description']
-            
-            # 제목 태그 제거 및 데이터 구성
-            clean_title = item['title'].replace('<b>', '').replace('</b>', '').replace('&quot;', '"')
-            
-            data = {
-                "title": clean_title,
-                "description": full_text, 
-                "originallink": item['originallink'],
-                "topic": topic  # 8개 분야 중 해당 분야 이름 저장
-            }
-            
-            try:
-                supabase.table("news_data").insert(data).execute()
-                print(f"   └ [저장 성공] {clean_title[:30]}...")
-            except Exception as e:
-                print(f"   └ [저장 실패] 중복 또는 에러: {e}")
-    else:
-        print(f"   └ [API 에러] {response.status_code}")
+    try:
+        response = requests.get(base_url, headers=headers, params=params, timeout=10)
+        if response.status_code == 200:
+            items = response.json().get('items', [])
+            for item in items:
+                full_text = get_full_text(item['link'])
+                if not full_text or len(full_text) < 50:
+                    full_text = item['description']
+                
+                # 🚨 [세탁] b 태그뿐만 아니라 모든 HTML 특수문자(&amp; 등)를 한 번에 한글로 디코딩
+                clean_title = html.unescape(item['title']).replace('<b>', '').replace('</b>', '')
+                clean_desc = html.unescape(full_text).replace('<b>', '').replace('</b>', '')
+                
+                data = {
+                    "title": clean_title,
+                    "description": clean_desc, 
+                    "originallink": item['originallink'],
+                    "topic": topic
+                }
+                
+                try:
+                    supabase.table("news_data").insert(data).execute()
+                    print(f"   └ [저장 성공] {clean_title[:30]}...")
+                except Exception as e:
+                    print(f"   └ [저장 실패] 중복 또는 에러: {e}")
+        else:
+            print(f"   └ [API 에러] {response.status_code}")
+    except Exception as e:
+        print(f"   └ [네트워크 에러] Naver API 연결 실패: {e}")
 
 def run_all_categories():
     """정의된 8개 분야를 순회하며 수집 실행"""
@@ -74,5 +85,4 @@ def run_all_categories():
     print("◈ 모든 분야 수집 프로세스 종료 ◈\n")
 
 if __name__ == "__main__":
-    # 파일 단독 실행 시 8개 분야 모두 수집
     run_all_categories()

@@ -1,4 +1,5 @@
 import os
+import sys  # 🚨 시스템 종료를 위해 sys 임포트
 import time
 import schedule
 from dotenv import load_dotenv
@@ -7,7 +8,7 @@ from supabase import create_client
 # 기존에 수정한 파일들로부터 함수 임포트
 from collect import collect_news
 from auto_pipeline import run_summarization
-from evaluate import evaluate_models  # 파일 내 함수명 확인 (evaluate_models)
+from evaluate import evaluate_models 
 
 # 환경 설정
 load_dotenv()
@@ -88,18 +89,26 @@ def autonomous_job():
     print("\n[STEP 4] 성능 통계 및 랭킹 업데이트")
     update_model_stats()
     
-    print(f"\n✨ [사이클 완료] 다음 실행(8시간 후)까지 대기합니다.")
+    print(f"\n✨ [사이클 완료] 파이프라인이 성공적으로 종료되었습니다.")
     print("="*60)
 
-# 8시간마다 실행 스케줄 설정
+# 8시간마다 실행 스케줄 설정 (로컬 백업용)
 schedule.every(8).hours.do(autonomous_job)
 
 if __name__ == "__main__":
     print("🛰️ ML-HR MLOps 자율 주행 시스템이 가동되었습니다.")
     
-    # 최초 실행 (프로그램을 켜자마자 바로 한 번 돌려보고 싶다면 아래 주석 해제)
-    autonomous_job() 
-    
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
+    # 🚨 [핵심 변경 포인트] 환경에 따른 분기 처리
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        print("🎬 [GitHub Actions 환경 검출] 단일 사이클 배치 실행 후 즉시 종료합니다.")
+        autonomous_job()
+        sys.exit(0) # 깃허브 클라우드가 정상 종료되도록 퇴근 신호를 보냄
+        
+    else:
+        print("💻 [로컬 환경 검출] 상시 스케줄러 루프 모드로 진입합니다.")
+        # 로컬에서 실행 시 켜자마자 즉시 한 바퀴 돌리기
+        autonomous_job() 
+        
+        while True:
+            schedule.run_pending()
+            time.sleep(60)
