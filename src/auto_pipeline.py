@@ -55,7 +55,7 @@ def run_summarization():
             tokenizer = AutoTokenizer.from_pretrained(
                 model_id, 
                 token=os.getenv("HF_TOKEN"),
-                use_fast=False 
+                use_fast=True
             )
             model = AutoModelForSeq2SeqLM.from_pretrained(model_id, token=os.getenv("HF_TOKEN"))
             
