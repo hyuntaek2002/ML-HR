@@ -49,8 +49,21 @@ def update_model_stats():
             best_model = max(avg_scores, key=avg_scores.get)
             top_score = avg_scores[best_model]
             
-            # 드리프트 감지 로직: 평균 점수가 65점 미만으로 떨어지면 경고
-            status = "✅ 정상" if top_score >= 65 else "⚠️ 성능 하락(드리프트 의심)"
+            # 1. 드리프트 감지 로직
+            if top_score >= 65:
+                status = "✅ 정상"
+            else:
+                status = "⚠️ 성능 하락(드리프트 의심)"
+                
+                
+                # 점수가 65점 미만으로 깨지면, 개발자가 만든 재학습 모듈을 여기서 직접 실행해버림
+                try:
+                    print(f"🚨{t} 분야 점수 열화 감지 ({top_score}점). 즉시 Optuna 재학습 서브루틴을 가동합니다.")
+                    
+                    # retrain_pipeline(topic=t) 
+                    
+                except Exception as retrain_err:
+                    print(f"❌ 자동 재학습 구동 중 에러 발생: {retrain_err}")
             
             # model_stats 테이블에 결과 저장 (upsert: 있으면 수정, 없으면 생성)
             supabase.table("model_stats").upsert({
