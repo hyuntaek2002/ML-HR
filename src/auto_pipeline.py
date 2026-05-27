@@ -23,7 +23,7 @@ def run_summarization():
     """DB에서 요약 대기 데이터를 가져와 모델별 일괄 로드 패턴으로 요약을 진행합니다."""
     print("🔍 DB에서 요약 대기 데이터(전 분야) 확인 중...")
     
-    # 요약이 비어있는 뉴스 호출
+    # 요약이 하나라도 비어있는(null) 뉴스 호출
     response = supabase.table("news_data").select("*").is_("summary_kobart", "null").execute()
     news_list = response.data
 
@@ -51,11 +51,13 @@ def run_summarization():
         print(f"\n🤖 [{model_name}] 글로벌 모델 가중치 로드 중... ({model_id})")
         
         try:
-            # 토크나이저 및 모델 로드 (단 한 번만 수행)
+            # 💡 [핵심 해결 포인트] kot5 모델의 고유 vocab 에러 방지를 위해 use_fast 옵션을 분기 처리 (과거 해결 방식 복구)
+            is_fast = False if model_name == "kot5" else True
+            
             tokenizer = AutoTokenizer.from_pretrained(
                 model_id, 
                 token=os.getenv("HF_TOKEN"),
-                use_fast=True
+                use_fast=is_fast
             )
             model = AutoModelForSeq2SeqLM.from_pretrained(model_id, token=os.getenv("HF_TOKEN"))
             
