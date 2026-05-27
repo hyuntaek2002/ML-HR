@@ -24,12 +24,17 @@
 - Automated Scheduling : 6시간 주기로 뉴스를 자동 수집하고 요약하여 데이터 드리프트에 선제적 대응
 - Baseline Comparison : 생성형 요약 모델과 추출형 기준 모델을 함께 비교
 
-## 설치 및 실행 방법 (Docker 기반)
+## 설치 및 실행 방법 (로컬 환경)
 
 백지 상태의 새로운 노트북(PC) 환경에서도 다음 단계만 거치면 전체 파이프라인이 즉시 가동됩니다.
 
-1. **Docker Desktop 설치 및 실행**
-   - 시스템에 Docker가 설치되어 구동 중인지 확인합니다.
+1. **패키지 매니저 및 가상환경 세팅**
+   - `uv` 등 패키지 매니저를 사용하여 가상환경을 생성하고 의존성을 설치합니다.
+   ```powershell
+   uv venv --python 3.12 .venv
+   .\.venv\Scripts\activate
+   uv pip install -r requirements.txt
+   ```
 
 2. **환경 변수 파일 세팅 (`.env`)**
    - 프로젝트 최상단에 `.env` 파일을 생성하고 다음 키들을 입력합니다.
@@ -43,15 +48,27 @@
      # CLOVA_API_KEY=선택사항
      ```
 
-3. **원클릭 컨테이너 빌드 및 백그라운드 실행**
+3. **서비스 개별 실행**
+   - 터미널 창을 4개 열고, 각 창마다 가상환경을 활성화(`.\.venv\Scripts\activate`)한 뒤 다음 명령어들을 각각 실행합니다:
 
-.\.venv\Scripts\activate
-
-   - 터미널(PowerShell 등)을 열고 아래 명령어를 입력합니다:
-     ```bash
-     docker-compose up --build -d
+   - **MLflow 서버 (실험 관리)**:
+     ```powershell
+     mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db
      ```
-   - *팁: 최초 실행 시 파이썬 패키지를 다운로드하느라 몇 분 정도 소요됩니다.*
+     mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow_personal.db --default-artifact-root ./mlartifacts_personal
+
+   - **FastAPI 서버 (모델 서빙)**:
+     ```powershell
+     uvicorn src.server:app --host 0.0.0.0 --port 8000
+     ```
+   - **Streamlit 대시보드 (모니터링)**:
+     ```powershell
+     streamlit run src/app.py --server.port=8501
+     ```
+   - **스케줄러 (데이터 수집 및 크론잡)**:
+     ```powershell
+     python src/main.py
+     ```
 
 4. **서비스 접속 주소**
    - 📊 **Streamlit 대시보드 (모니터링)**: `http://localhost:8501`
@@ -67,8 +84,7 @@
 - **[Evaluation] 환각 방지 무참조 검증**: QAFactEval(기계 독해 기반) 및 G-Eval(로그 확률 기반)을 활용한 정밀한 AI 채점 도입
 - **[Observability] MLflow Tracing**: 모든 파이프라인 모듈에 추적 데코레이터를 붙여 레이턴시 및 프롬프트 모니터링 연동
 - **[CT] ZenML 재학습 자동화 트리거**: 이상 감지 시 격리 데이터+합성 데이터를 활용한 파인튜닝 트리거 및 Blue-Green 배포 플래그 로직 구성
-- **[Deployment] Docker 오케스트레이션**: FastAPI, Streamlit, MLflow, 자율 스케줄러를 `docker-compose`로 완벽히 분리 컨테이너화
 
 ## 앞으로 해볼 수 있는 남은 과제
 - 로컬 GPU(Prometheus 모델) 오프라인 평가 완전 자동화 연동
-- AWS EC2 등 클라우드 인스턴스에 현재 Docker 이미지 그대로 배포하기
+- AWS EC2 등 클라우드 인스턴스에 파이프라인 배포 및 서비스화

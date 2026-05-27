@@ -17,7 +17,7 @@ def run_qafacteval(summary_text, original_text, model_name="gpt-4o-mini"):
     원문: {original_text}
     요약: {summary_text}
     
-    출력 형식(JSON): {{"is_factual": true, "fact_score": 95, "reasoning": "..."}}
+    출력 형식(JSON): {{"is_factual": true/false, "fact_score": 0~100사이_정수, "reasoning": "평가 사유"}}
     """
     try:
         response = litellm.completion(
@@ -50,7 +50,7 @@ def run_geval(summary_text, original_text, model_name="gpt-4o-mini"):
     요약: {summary_text}
     
     위 4가지 기준을 종합하여 최종 품질을 0점~100점 사이로 환산하여 평가하세요. 
-    출력 형식(JSON): {{"geval_score": 85, "details": {{"relevance": 4, "consistency": 5, "fluency": 4, "coherence": 4}}}}
+    출력 형식(JSON): {{"geval_score": 0~100사이_정수, "details": {{"relevance": 1~5점, "consistency": 1~5점, "fluency": 1~5점, "coherence": 1~5점}}}}
     """
     try:
         # logprobs 파라미터를 지원하는 모델의 경우 활성화
