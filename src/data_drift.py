@@ -1,6 +1,12 @@
 import os
+import gc
+import math
+import re
+import numpy as np
+import torch
 import pandas as pd
 import textstat
+from transformers import GPT2LMHeadModel, PreTrainedTokenizerFast
 from evidently.report import Report
 from evidently.metrics import ColumnDriftMetric
 from supabase import create_client
@@ -17,9 +23,77 @@ def compute_text_features(text):
     try:
         if not text or len(text.strip()) == 0:
             return 0.0
-        return textstat.flesch_reading_ease(text)
+        return float(textstat.flesch_reading_ease(text))
     except:
         return 0.0
+
+def compute_burstiness(text):
+    """
+    텍스트 내부 문장 길이(단어 수)의 변동계수(Burstiness)를 계산합니다.
+    표준편차 / 평균으로 산출하며, 길이가 고정적이면 낮고 다채로우면 높습니다.
+    """
+    if not text or len(text.strip()) == 0:
+        return 0.0
+    
+    # 문장 단위로 거칠게 분리 (., !, ? 기준)
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 0]
+    
+    if len(sentences) == 0:
+        return 0.0
+        
+    lengths = [len(s.split()) for s in sentences]
+    mean_len = np.mean(lengths)
+    
+    if mean_len == 0:
+        return 0.0
+        
+    std_len = np.std(lengths)
+    burstiness = std_len / mean_len
+    return float(burstiness)
+
+def compute_perplexity(text_series):
+    """
+    Pandas Series 형태의 텍스트 리스트를 받아 KoGPT2로 퍼플렉서티를 일괄 계산합니다.
+    메모리 최적화를 위해 호출 시에만 모델을 로드하고 연산 후 즉시 삭제합니다.
+    """
+    model_name = 'skt/kogpt2-base-v2'
+    try:
+        tokenizer = PreTrainedTokenizerFast.from_pretrained(model_name)
+        model = GPT2LMHeadModel.from_pretrained(model_name)
+        model.eval()
+        
+        perplexities = []
+        for text in text_series:
+            if not text or len(text.strip()) == 0:
+                perplexities.append(0.0)
+                continue
+            
+            inputs = tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
+            if inputs['input_ids'].size(1) == 0:
+                perplexities.append(0.0)
+                continue
+                
+            with torch.no_grad():
+                outputs = model(**inputs, labels=inputs['input_ids'])
+                loss = outputs.loss
+                # loss가 너무 크면 math.exp 오버플로우가 날 수 있으므로 방어
+                try:
+                    ppl = math.exp(loss.item())
+                except OverflowError:
+                    ppl = 10000.0 # 상한치 캡
+            perplexities.append(float(ppl))
+            
+    finally:
+        # 모델 완전 삭제 및 가비지 컬렉션 (메모리 누수 방지)
+        if 'model' in locals():
+            del model
+        if 'tokenizer' in locals():
+            del tokenizer
+        torch.cuda.empty_cache()
+        gc.collect()
+        
+    return perplexities
 
 def detect_drift_for_topic(topic, current_texts):
     """
@@ -43,9 +117,18 @@ def detect_drift_for_topic(topic, current_texts):
     df_ref["readability"] = df_ref["text"].apply(compute_text_features)
     df_cur["readability"] = df_cur["text"].apply(compute_text_features)
     
-    # 3. Evidently AI를 이용한 PSI 기반 통계적 드리프트 감지 (임계값 0.25)
+    df_ref["burstiness"] = df_ref["text"].apply(compute_burstiness)
+    df_cur["burstiness"] = df_cur["text"].apply(compute_burstiness)
+    
+    print("   └> [Drift] 퍼플렉서티 연산용 언어 모델을 임시 로드합니다...")
+    df_ref["perplexity"] = compute_perplexity(df_ref["text"])
+    df_cur["perplexity"] = compute_perplexity(df_cur["text"])
+    
+    # 3. Evidently AI를 이용한 3차원 다변량 드리프트 감지 (임계값 0.25)
     report = Report(metrics=[
-        ColumnDriftMetric(column_name="readability", stattest="psi", stattest_threshold=0.25)
+        ColumnDriftMetric(column_name="readability", stattest="psi", stattest_threshold=0.25),
+        ColumnDriftMetric(column_name="burstiness", stattest="psi", stattest_threshold=0.25),
+        ColumnDriftMetric(column_name="perplexity", stattest="psi", stattest_threshold=0.25)
     ])
     
     # 데이터가 너무 적을 때 Evidently가 에러를 뱉을 수 있으므로 예외 처리
@@ -53,11 +136,22 @@ def detect_drift_for_topic(topic, current_texts):
         report.run(reference_data=df_ref, current_data=df_cur)
         results = report.as_dict()
         
-        drift_result = results["metrics"][0]["result"]
-        drift_detected = drift_result["drift_detected"]
-        drift_score = drift_result["drift_score"]
+        drifted_features = 0
+        total_drift_score = 0.0
         
-        return drift_detected, drift_score
+        for metric in results["metrics"]:
+            res = metric["result"]
+            score = res["drift_score"]
+            total_drift_score += score
+            if res["drift_detected"]:
+                drifted_features += 1
+                
+        avg_drift_score = total_drift_score / 3.0
+        
+        # 3개 중 2개 이상 지표가 박살났거나 평균 분포가 심하게 벗어나면 드리프트 판정
+        drift_detected = (drifted_features >= 2) or (avg_drift_score > 0.25)
+        
+        return drift_detected, avg_drift_score
     except Exception as e:
         print(f"⚠️ Evidently PSI 계산 중 예외 발생: {e}")
         return False, 0.0
