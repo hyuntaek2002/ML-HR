@@ -1,58 +1,19 @@
 import os
 import re
 import json
-import openai
 import requests
 import time
 from dotenv import load_dotenv
 from supabase import create_client
 import mlflow  # 🚨 MLflow 라이브러리 연동
+import litellm # 🚨 AI Gateway 역할을 수행할 LiteLLM 연동
 
 # 환경 설정 및 초기화
 load_dotenv()
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
-openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def get_gpt_score(summary_text, original_text):
-    """GPT-4o-mini 심사위원을 통한 요약 품질 채점"""
-    prompt = f"원문: {original_text}\n요약: {summary_text}\n품질을 0~100점 사이 JSON으로 평가해: {{\"score\": 0}}"
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={ "type": "json_object" },
-            timeout=15
-        )
-        result = json.loads(response.choices[0].message.content)
-        return float(result.get("score", 0))
-    except Exception as e:
-        print(f"\n    ❌ GPT 평가 실패: {e}")
-        return None
+from advanced_eval import get_comprehensive_score
 
-def get_clova_score(summary_text, original_text):
-    """Clova HyperCLOVA X 심사위원을 통한 요약 품질 채점"""
-    url = "https://clovastudio.stream.ntruss.com/v3/chat-completions/HCX-005"
-    headers = {
-        "Authorization": f"Bearer {os.getenv('CLOVA_API_KEY')}",
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-    payload = {
-        "messages": [{"role": "user", "content": f"뉴스 원문과 요약문을 비교하여 요약 품질을 0~100 사이의 숫자로만 평가해줘.\n\n원문: {original_text}\n요약: {summary_text}"}],
-        "topP": 0.8, "topK": 0, "maxTokens": 256, "temperature": 0.1, "stopBefore": [], "repeatPenalty": 1.1
-    }
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
-        if response.status_code == 200:
-            res_json = response.json()
-            content = res_json['result']['message']['content']
-            score_match = re.search(r'\d+(\.\d+)?', content)
-            if score_match:
-                return float(score_match.group())
-        return None
-    except Exception as e:
-        print(f"\n    ❌ Clova 호출 중 예외 발생: {e}")
-        return None
 
 def evaluate_models():
     print("\n" + "="*50)
@@ -105,13 +66,10 @@ def evaluate_models():
                 summary = news.get(f"summary_{m}")
                 if not summary or len(summary) < 5: continue
                 
-                print(f" > {m.upper()} 채점 진행 중...", end=" ", flush=True)
-                s1 = get_gpt_score(summary, news['description'])
-                s2 = get_clova_score(summary, news['description'])
+                print(f" > {m.upper()} 채점 진행 중 (QAFactEval & G-Eval)...", end=" ", flush=True)
+                final_score = get_comprehensive_score(summary, news['description'])
                 
-                valid_scores = [s for s in [s1, s2] if s is not None]
-                if valid_scores:
-                    final_score = round(sum(valid_scores) / len(valid_scores), 1)
+                if final_score > 0:
                     
                     if final_score > 100.0: final_score = 100.0
                     elif final_score < 0.0: final_score = 0.0
