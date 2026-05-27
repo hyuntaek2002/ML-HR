@@ -5,14 +5,15 @@ import traceback
 import re
 from dotenv import load_dotenv
 from supabase import create_client
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+# 💡 AutoTokenizer 외에 T5 전용 명시적 로더인 T5Tokenizer를 추가 임포트함
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, T5Tokenizer
 from preprocess import clean_text
 
 # 1. 환경 설정
 load_dotenv()
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
-# 비교할 3가지 모델 정의
+# 사용자님이 원래 지정하셨던 오리지널 모델 라인업 100% 유지
 MODEL_CONFIGS = {
     "kobart": "digit82/kobart-summarization",
     "kot5": "paust/pko-t5-base",
@@ -51,14 +52,20 @@ def run_summarization():
         print(f"\n🤖 [{model_name}] 글로벌 모델 가중치 로드 중... ({model_id})")
         
         try:
-            # 💡 [핵심 해결 포인트] kot5 모델의 고유 vocab 에러 방지를 위해 use_fast 옵션을 분기 처리 (과거 해결 방식 복구)
-            is_fast = False if model_name == "kot5" else True
-            
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_id, 
-                token=os.getenv("HF_TOKEN"),
-                use_fast=is_fast
-            )
+            # 💡 [치명적 결함 해결] kot5(paust) 모델은 최신 AutoTokenizer와 충돌하므로,
+            # T5Tokenizer를 직접 명시하여 불러오면 레거시 파일 에러를 완벽하게 우회함
+            if model_name == "kot5":
+                tokenizer = T5Tokenizer.from_pretrained(
+                    model_id, 
+                    token=os.getenv("HF_TOKEN")
+                )
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    model_id, 
+                    token=os.getenv("HF_TOKEN"),
+                    use_fast=True
+                )
+                
             model = AutoModelForSeq2SeqLM.from_pretrained(model_id, token=os.getenv("HF_TOKEN"))
             
             device = "cuda" if torch.cuda.is_available() else "cpu"
