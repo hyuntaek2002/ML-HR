@@ -19,6 +19,9 @@ MODEL_CONFIGS = {
     "roberta": "EbanLee/kobart-summary-v3"
 }
 
+import mlflow
+
+@mlflow.trace(name="generate_with_model", span_type="LLM")
 def generate_with_model(model_name, text):
     """지정된 모델을 사용하여 요약문을 생성합니다."""
     model_id = MODEL_CONFIGS[model_name]
