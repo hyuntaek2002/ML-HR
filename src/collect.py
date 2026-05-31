@@ -1,5 +1,5 @@
 import os
-import html  # 🚨 HTML 특수문자 완벽 세탁용 라이브러리 추가
+import html  # HTML 특수문자 완벽 세탁용 라이브러리 추가
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -38,7 +38,7 @@ def collect_news(topic, count=1):
         "X-Naver-Client-Secret": os.getenv("NAVER_CLIENT_SECRET")
     }
     
-    # 🚨 [안전장치] URL 한글 깨짐 방지를 위해 params 딕셔너리 구조로 변경
+    # [안전장치] URL 한글 깨짐 방지를 위해 params 딕셔너리 구조로 변경
     base_url = "https://openapi.naver.com/v1/search/news.json"
     params = {
         "query": topic,
@@ -60,7 +60,7 @@ def collect_news(topic, count=1):
                 if not full_text or len(full_text) < 50:
                     full_text = item['description']
                 
-                # 🚨 [세탁] b 태그뿐만 아니라 모든 HTML 특수문자(&amp; 등)를 한 번에 한글로 디코딩
+                # [세탁] b 태그뿐만 아니라 모든 HTML 특수문자(&amp; 등)를 한 번에 한글로 디코딩
                 clean_title = html.unescape(item['title']).replace('<b>', '').replace('</b>', '')
                 clean_desc = html.unescape(full_text).replace('<b>', '').replace('</b>', '')
                 
@@ -87,7 +87,7 @@ def collect_news(topic, count=1):
                     for data in collected_data:
                         try:
                             supabase.table("news_data").insert(data).execute()
-                            # 🚨 데이터 레이크(lakeFS) 스냅샷용 별도 로깅
+                            # 데이터 레이크(lakeFS) 스냅샷용 별도 로깅
                             supabase.table("lakefs_snapshot").insert({
                                 "original_data": data,
                                 "snapshot_timestamp": "now()"
